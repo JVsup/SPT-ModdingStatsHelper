@@ -1,0 +1,294 @@
+using SPT.Reflection.Patching;
+using EFT.InventoryLogic;
+using System.Reflection;
+using EFT.UI;
+using EFT.UI.Screens;
+using System.Collections.Generic;
+using static SPT.ModdingStatsHelper.Utils;
+using EFT.UI.DragAndDrop;
+using System;
+using System.Linq;
+using EFT.UI.WeaponModding;
+using HarmonyLib;
+
+namespace SPT.ModdingStatsHelper
+{
+    public class ItemShowTooltipPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(GridItemView),
+                x => x.Name == nameof(GridItemView.ShowTooltip));
+        }
+
+        [PatchPrefix]
+        static void Prefix(GridItemView __instance)
+        {
+            if (Globals.isWeaponModding)
+            {
+                Globals.mod = __instance.Item;
+            }
+        }
+    }
+
+    public class ShowTooltipPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(SimpleTooltip),
+                x => x.Name == nameof(SimpleTooltip.Show));
+        }
+
+        [PatchPrefix]
+        static void Prefix(ref string text, ref float delay, SimpleTooltip __instance)
+        {
+            if (Globals.isWeaponModding)
+            {
+                if (Globals.mod == null)
+                {
+                    return;
+                }
+
+                if (text != "")
+                    Globals.lastTooltipText = text;
+
+                if (text.Contains("EQUIPPED") || text.Contains("STASH"))
+                {
+                    return;
+                }
+                if (Globals.mod.Attributes != null)
+                {
+                    delay = 0.1f;
+
+                    Globals.simpleTooltip = __instance;
+
+                    string firstString = "";
+                    string finalString = "";
+                    bool isSameStats = true;
+
+                    bool hoveringSlottedMod = Globals.allSlots.Any(a => a.ContainedItem == Globals.mod);
+
+                    if (Globals.isKeyPressed && !hoveringSlottedMod)
+                    {
+                        firstString = "<mspace=0.55em><color=#52ffd9>STATS</color></mspace> → <size=65%><mspace=0.4875em><color=#fc7b03>COMPARISON</color></mspace>   (CTRL)</size><br>";
+                    }
+                    else if (!hoveringSlottedMod && Globals.dropDownCurrentItem != null)
+                    {
+                        firstString = "<mspace=0.55em><color=#fc7b03>COMPARISON</color></mspace> → <size=65%><mspace=0.4475em><color=#52ffd9>STATS</color></mspace>   (CTRL)</size><br>";
+                    }
+
+                    if (hoveringSlottedMod || Globals.isKeyPressed || Globals.dropDownCurrentItem == null)
+                    {
+                        List<ItemAttribute> attributes = GetAllAttributesNotInBlacklist(Globals.mod.Attributes);
+
+                        foreach (var attribute in attributes)
+                        {
+                            if (attribute.Base() != 0)
+                            {
+                                string stringColor = "#ffffff";
+                                string stringValue = attribute.StringValue();
+
+                                string stringDisplayname = AlignTextToWidth(attribute.DisplayName.Trim() + ":");
+
+                                stringValue = AddOperatorToStringValue(attribute.StringValue(), attribute.Base(), false);
+                                stringColor = GetValueColor(attribute.Base(), attribute.LessIsGood, attribute.LabelVariations, false);
+                                if (!stringValue.Contains("MOA"))
+                                {
+                                    string attributeLine = $"<mspace=0.55em>{stringDisplayname}</mspace><color={stringColor}>{stringValue}</color><br>";
+
+                                    finalString += attributeLine;
+                                    isSameStats = false;
+                                }
+                            }
+                        }
+                    }
+                    else
+                    {
+                        List<ItemAttribute> replacingAttributes = GetAllAttributesNotInBlacklist(Globals.mod.Attributes);
+                        List<ItemAttribute> slottedAttributes = GetAllAttributesNotInBlacklist(Globals.dropDownCurrentItem.Attributes);
+
+                        List<string> replacingAttributesDisplayed = new List<string>();
+
+                        foreach (var slottedAttribute in slottedAttributes)
+                        {
+                            if (slottedAttribute.Base() != 0)
+                            {
+                                string stringDisplayname = AlignTextToWidth(slottedAttribute.DisplayName.Trim() + ":");
+                                ItemAttribute replacingAttribute = replacingAttributes.SingleOrDefault(a => a.Id.ToString() == slottedAttribute.Id.ToString());
+
+                                if (replacingAttribute != null && replacingAttribute.Base() != 0)
+                                {
+                                    float substractedBases = slottedAttribute.Base() - replacingAttribute.Base();
+                                    bool isZero = Math.Abs(substractedBases) < float.Epsilon;
+                                    if (!isZero)
+                                    {
+                                        string substractedAttributeStringValue = SubstractStringValue(slottedAttribute.StringValue(), replacingAttribute.StringValue());
+
+                                        substractedAttributeStringValue = SpaghettiLastStringValueOperatorCheck(substractedAttributeStringValue, substractedBases);
+                                        string stringColor = GetValueColor(substractedBases, slottedAttribute.LessIsGood, slottedAttribute.LabelVariations, true);
+
+                                        if (!substractedAttributeStringValue.Contains("MOA"))
+                                        {
+                                            string attributeLine = $"<mspace=0.55em>{stringDisplayname}</mspace><color={stringColor}>{substractedAttributeStringValue}</color><br>";
+
+                                            finalString += attributeLine;
+                                            isSameStats = false;
+                                        }
+                                    }
+                                }
+                                else
+                                {
+                                    string stringValue = AddOperatorToStringValue(slottedAttribute.StringValue(), slottedAttribute.Base(), false);
+                                    string stringColor = GetValueColor(slottedAttribute.Base(), slottedAttribute.LessIsGood, slottedAttribute.LabelVariations, true);
+                                    stringValue = ReverseOperator(stringValue);
+
+                                    if (!stringValue.Contains("MOA"))
+                                    {
+                                        string attributeLine = $"<mspace=0.55em>{stringDisplayname}</mspace><color={stringColor}>{stringValue}</color><br>";
+
+                                        finalString += attributeLine;
+                                        isSameStats = false;
+                                    }
+                                }
+                            }
+                            replacingAttributesDisplayed.Add(slottedAttribute.Id.ToString());
+                        }
+
+                        foreach (var attribute in replacingAttributes)
+                        {
+                            if (!replacingAttributesDisplayed.Contains(attribute.Id.ToString()))
+                            {
+                                string stringDisplayname = AlignTextToWidth(attribute.DisplayName.Trim() + ":");
+                                string stringValue = AddOperatorToStringValue(attribute.StringValue(), attribute.Base(), false);
+                                string stringColor = GetValueColor(attribute.Base(), attribute.LessIsGood, attribute.LabelVariations, false);
+
+                                if (!stringValue.Contains("MOA"))
+                                {
+                                    string attributeLine = $"<mspace=0.55em>{stringDisplayname}</mspace><color={stringColor}>{stringValue}</color><br>";
+
+                                    finalString += attributeLine;
+                                    isSameStats = false;
+                                }
+                            }
+                        }
+                    }
+
+                    if (finalString != "" || firstString != "")
+                    {
+                        if (firstString == "")
+                        {
+                            firstString = "<mspace=0.55em><color=#52ffd9>STATS</color></mspace><br>";
+                        }
+                        if (isSameStats && firstString.Contains("COMPARISON") && !Globals.isKeyPressed)
+                        {
+                            finalString += "<color=#39ff2b>SAME STATS</color><br>";
+                        }
+
+                        text += "<br>" + firstString + finalString;
+                    }
+                }
+            }
+        }
+    }
+
+    public class WeaponUpdatePatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(EditBuildScreen),
+                x => x.Name == nameof(EditBuildScreen.WeaponUpdate));
+        }
+
+        [PatchPrefix]
+        static void Prefix()
+        {
+            Globals.allSlots.Clear();
+        }
+    }
+
+    public class DropDownSlotContextPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(DropDownMenu),
+                x => x.Name == nameof(DropDownMenu.Show));
+        }
+
+        [PatchPrefix]
+        static void Prefix(ModdingScreenSlotView slotView)
+        {
+            FieldInfo fieldInfo = typeof(ModdingScreenSlotView).GetField("_slot", BindingFlags.Instance | BindingFlags.NonPublic);
+            if (fieldInfo != null)
+            {
+                Slot slot = (Slot)fieldInfo.GetValue(slotView);
+                if (slot.ContainedItem != null)
+                {
+                    Globals.dropDownCurrentItem = slot.ContainedItem;
+                }
+            }
+        }
+    }
+
+    public class DropDownSlotContextClosePatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(DropDownMenu),
+                x => x.Name == nameof(DropDownMenu.Close));
+        }
+
+        [PatchPrefix]
+        static void Prefix()
+        {
+            if (Globals.isWeaponModding)
+            {
+                Globals.dropDownCurrentItem = null;
+            }
+        }
+    }
+
+    public class SlotViewPatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(ModdingScreenSlotView),
+                x => x.Name == nameof(ModdingScreenSlotView.Show));
+        }
+
+        [PatchPrefix]
+        static void Prefix(Slot slot)
+        {
+            if (slot.ContainedItem != null)
+            {
+                Globals.allSlots.Add(slot);
+            }
+        }
+    }
+
+    public class ScreenTypePatch : ModulePatch
+    {
+        protected override MethodBase GetTargetMethod()
+        {
+            return AccessTools.FirstMethod(typeof(MenuTaskBar),
+                x => x.Name == nameof(MenuTaskBar.OnScreenChanged));
+        }
+
+        [PatchPrefix]
+        static void Prefix(EEftScreenType eftScreenType)
+        {
+            if (eftScreenType == EEftScreenType.EditBuild || eftScreenType == EEftScreenType.WeaponModding)
+            {
+                Globals.isWeaponModding = true;
+                return;
+            }
+
+            if (Globals.isWeaponModding)
+            {
+                if (eftScreenType != EEftScreenType.EditBuild || eftScreenType != EEftScreenType.WeaponModding)
+                {
+                    Globals.ClearAllGlobals();
+                }
+            }
+        }
+    }
+}
